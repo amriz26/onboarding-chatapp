@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+apps/web/.next/
+apps/web/out/
+
+# Rust build artifacts
+apps/mcp-server/target/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+apps/web/.env.local
+
+# Misc
+.DS_Store
+*.tgz
+*.log
+.turbo/
+dist/
+
+# Editor
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,16 @@
+{
+  "name": "effect-mcp-chat",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter shared build && pnpm --filter web build",
+    "build:mcp": "cargo build --manifest-path apps/mcp-server/Cargo.toml --release",
+    "type-check": "pnpm --filter web type-check && pnpm --filter shared type-check",
+    "lint": "pnpm --filter web lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

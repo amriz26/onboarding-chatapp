@@ -1,53 +1,50 @@
 /**
  * POST /api/chat — streaming chat endpoint.
  *
- * FLOW:
- *   Browser → POST /api/chat (JSON body) → this route
- *     → Effect program (parse + validate + fetch MCP tools)
- *       → streamText (Anthropic Claude + MCP tool executors)
- *         → ReadableStream → Browser (Server-Sent Events)
+ * Architecture:
+ *   Browser → POST /api/chat (JSON body)
+ *     → validate with Effect Schema
+ *       → streamChatProgram (ChatService → MCPService + AIService)
+ *         → toDataStreamResponse() → SSE → browser useChat hook
  *
- * WHY EFFECT FOR THE SETUP (not just async/await)?
- *   The setup phase has multiple typed failure modes:
- *     - McpConnectionError   → 503
- *     - McpToolDiscoveryError → 502
- *     - ValidationError      → 400
- *     - AiApiError           → 502
+ * The entire request lifecycle (validation + service execution) is a single
+ * Effect program. Typed failures map to deterministic HTTP status codes:
  *
- *   Effect tracks all of these in the type system. The match at the end of
- *   this file is exhaustive — the compiler forces us to handle every case.
- *   No forgotten error paths, no silent swallowing.
+ *   McpConnectionError   → 503  (MCP server not reachable)
+ *   McpToolDiscoveryError → 502  (tool list call failed)
+ *   AiApiError           → 502  (Anthropic API failure)
+ *   ValidationError      → 400  (malformed request body)
+ *   ConfigError          → 500  (missing env var)
+ *   Other               → 500  (unexpected)
  *
- * WHY Effect.scoped + Layer.toRuntime?
- *   McpClientLive uses Layer.scoped, which means it creates resources
- *   (the MCP process) that must be cleaned up. Effect.scoped creates a
- *   Scope and runs the finalizers (close the MCP pipe) when the Effect
- *   completes — regardless of success or failure.
+ * Effect.scoped ensures the MCP connection (a scoped resource in MCPLayer) is
+ * acquired and released within this single request, regardless of success or
+ * failure.
  */
 
-import { Effect, Layer } from "effect"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { type CoreMessage } from "ai"
-import { ChatService } from "@/lib/effect/services/chat-service"
-import { ChatLayer } from "@/lib/effect/layers"
+import { ChatService } from "@/services/ChatService"
+import { AppLayer } from "@/layers/ChatLayer"
 import { ChatRequestSchema } from "@/lib/schemas"
 import {
   McpConnectionError,
   McpToolDiscoveryError,
   ValidationError,
   AiApiError,
+  ConfigError,
 } from "@/lib/effect/errors"
+import { streamChatProgram } from "@/effects/chat"
 
-// Force Node.js runtime — the MCP SDK spawns child processes which are not
-// available in the Edge runtime.
+// Node.js runtime required — MCP SDK spawns child processes unavailable in Edge.
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function POST(req: Request): Promise<Response> {
   // ---------------------------------------------------------------------------
-  // Step 1: Parse the request body (outside Effect — raw JSON parsing can't
-  //         be modelled as an Effect because it's synchronous and infallible
-  //         at the HTTP level).
+  // Parse: raw JSON deserialization lives at the I/O boundary where try/catch
+  // is appropriate. Body parsing is not modelled as an Effect because it is a
+  // pure I/O operation with no typed failure modes we can act on differently.
   // ---------------------------------------------------------------------------
   let rawBody: unknown
   try {
@@ -57,81 +54,62 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 2: Validate the body with Effect Schema.
+  // Single Effect pipeline: validate → stream.
   //
-  // Schema.decodeUnknown returns an Effect<ChatRequest, ParseError>.
-  // We map the ParseError to our domain ValidationError type.
+  // Effect.gen threads validation and service execution through a typed error
+  // channel. Every possible failure is visible in the type signature; the match
+  // below is exhaustive by construction.
   // ---------------------------------------------------------------------------
-  const parseResult = await Effect.runPromiseExit(
-    Schema.decodeUnknown(ChatRequestSchema)(rawBody).pipe(
-      Effect.mapError(
-        (parseError) =>
-          new ValidationError({
-            message: `Invalid request body: ${parseError.message}`,
-          }),
-      ),
-    ),
-  )
-
-  if (parseResult._tag === "Failure") {
-    const cause = parseResult.cause
-    const msg =
-      cause._tag === "Fail" ? (cause.error as ValidationError).message : "Validation failed"
-    return jsonError(msg, 400)
-  }
-
-  const { messages } = parseResult.value
-
-  // ---------------------------------------------------------------------------
-  // Step 3: Run the chat service inside a scoped Effect.
-  //
-  // Effect.scoped creates a Scope for the request.
-  // Layer.toRuntime(ChatLayer) builds the Layer graph within that Scope.
-  // When the scope closes (after the Effect finishes), all finalizers run —
-  // including the MCP process cleanup.
-  // ---------------------------------------------------------------------------
-  const chatProgram = Effect.gen(function* () {
-    const chatService = yield* ChatService
-    return yield* chatService.streamChat(messages as CoreMessage[])
-  })
-
   const exit = await Effect.runPromiseExit(
-    chatProgram.pipe(
-      Effect.provide(ChatLayer),
-      // scoped ensures the Layer's resources (MCP connection) are acquired and
-      // released within this single request's lifecycle.
+    Effect.gen(function* () {
+      // Schema validation — ParseError maps to our domain ValidationError.
+      const { messages } = yield* Schema.decodeUnknown(ChatRequestSchema)(
+        rawBody,
+      ).pipe(
+        Effect.mapError(
+          (parseError) =>
+            new ValidationError({
+              message: `Invalid request body: ${parseError.message}`,
+            }),
+        ),
+      )
+
+      // Delegate to the pure Effect program — ChatService is resolved from AppLayer.
+      // Schema gives readonly tuples; CoreMessage[] is mutable — cast via unknown.
+      return yield* streamChatProgram(messages as unknown as CoreMessage[])
+    }).pipe(
+      Effect.provide(AppLayer),
+      // scoped: acquire MCP connection for this request, release on completion.
       Effect.scoped,
     ),
   )
 
   // ---------------------------------------------------------------------------
-  // Step 4: Map typed failures to HTTP responses.
+  // Map typed failures → HTTP responses (exhaustive by Effect's error channel).
   // ---------------------------------------------------------------------------
   if (exit._tag === "Failure") {
-    const cause = exit.cause
+    const { cause } = exit
 
     if (cause._tag === "Fail") {
       const error = cause.error
 
-      if (error instanceof McpConnectionError) {
+      if (error instanceof McpConnectionError)
         return jsonError(
           `MCP server unavailable: ${error.message}. ` +
             `Run \`pnpm build:mcp\` and set MCP_SERVER_PATH.`,
           503,
         )
-      }
-
-      if (error instanceof McpToolDiscoveryError) {
+      if (error instanceof McpToolDiscoveryError)
         return jsonError(`Failed to discover MCP tools: ${error.message}`, 502)
-      }
-
-      if (error instanceof AiApiError) {
+      if (error instanceof AiApiError)
         return jsonError(`AI API error: ${error.message}`, 502)
-      }
-
-      if (error instanceof ValidationError) {
+      if (error instanceof ValidationError)
         return jsonError(error.message, 400)
-      }
+      if (error instanceof ConfigError)
+        return jsonError(
+          `Server configuration error: ${error.message}`,
+          500,
+        )
     }
 
     console.error("[/api/chat] Unexpected failure:", cause)
@@ -139,10 +117,8 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 5: Return the AI SDK streaming response.
-  //
-  // toDataStreamResponse() encodes the stream as Server-Sent Events in the
-  // format the useChat() client hook expects.
+  // Stream: toDataStreamResponse() encodes the result as SSE in the format
+  // that useChat (and AI SDK Elements) expects.
   // ---------------------------------------------------------------------------
   return exit.value.toDataStreamResponse()
 }

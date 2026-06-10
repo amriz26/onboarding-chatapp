@@ -9,29 +9,27 @@
  *
  * WHY RUST?
  *   - Rust produces a single static binary with zero runtime dependencies.
- *   - The MCP server can be shipped alongside the Next.js app and started on demand.
- *   - Rust's type system and ownership model make it excellent for correct,
- *     safe tool implementations.
+ *   - The binary is spawned on demand by the Next.js server — no daemon needed.
+ *   - Rust's ownership model ensures memory safety in the tool handlers.
  *
  * WHY STDIO TRANSPORT?
- *   MCP supports both stdio (stdin/stdout) and HTTP-SSE transports.
- *   Stdio is the simplest: the parent process owns the lifecycle, no ports to
- *   manage, and it is naturally sandboxed — the tool server can only
- *   communicate through the pipe, not make arbitrary network requests.
+ *   MCP supports both stdio and HTTP-SSE transports.
+ *   Stdio is simplest: the parent process owns the lifecycle, no ports to
+ *   manage, and the tool server is naturally sandboxed.
  */
 
 mod tools;
 
 use anyhow::Result;
+// ServiceExt provides the .serve() method on any ServerHandler implementor.
 use rmcp::{transport::stdio, ServiceExt};
 use tools::McpToolServer;
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // MCP uses stdout for the JSON-RPC protocol, so we MUST send logs to
-    // stderr. If we accidentally wrote tracing output to stdout it would
-    // corrupt the protocol stream.
+    // MCP uses stdout for JSON-RPC, so logs MUST go to stderr.
+    // Writing anything else to stdout would corrupt the protocol stream.
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -41,8 +39,8 @@ async fn main() -> Result<()> {
 
     let server = McpToolServer::new();
 
-    // `stdio()` creates a paired (stdin, stdout) transport.
-    // `serve` drives the JSON-RPC loop until EOF / shutdown.
+    // stdio() creates a paired (stdin → read, stdout → write) transport.
+    // serve() drives the JSON-RPC request/response loop until EOF / shutdown.
     server.serve(stdio()).await?;
 
     tracing::info!("MCP tool server exiting");

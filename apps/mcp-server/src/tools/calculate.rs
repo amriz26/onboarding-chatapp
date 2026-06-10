@@ -3,12 +3,11 @@
  *
  * Evaluates a safe arithmetic expression and returns the result.
  *
- * Supported operations: + - * / % ^ () and standard functions like
- * sqrt(), sin(), cos(), abs(), floor(), ceil(), round(), min(), max().
+ * Supported: + - * / % ^ () and functions like sqrt(), sin(), cos(),
+ * abs(), floor(), ceil(), round(), min(), max(), ln(), log2(), exp().
  *
- * The `evalexpr` crate is a sandboxed evaluator — it does NOT execute
- * arbitrary code, only a well-defined grammar of math expressions. This
- * makes it safe to expose as a public tool.
+ * evalexpr is a sandboxed evaluator — it cannot execute arbitrary code.
+ * Only a well-defined grammar of math expressions is supported.
  *
  * Examples:
  *   "2 + 2"             → 4
@@ -17,12 +16,11 @@
  *   "(100 / 4) + 3.5"  → 28.5
  */
 
-use evalexpr::{eval_number_with_context, HashMapContext};
-use rmcp::model::{CallToolResult, Content, ErrorData};
+use evalexpr::eval_number;
+use rmcp::model::{Annotated, CallToolResult, ErrorData, RawContent};
 use serde_json::{json, Map, Value};
 
 pub fn handle(arguments: Option<&Map<String, Value>>) -> Result<CallToolResult, ErrorData> {
-    // Extract the expression string from the tool arguments.
     let expression = arguments
         .and_then(|args| args.get("expression"))
         .and_then(|v| v.as_str())
@@ -33,39 +31,44 @@ pub fn handle(arguments: Option<&Map<String, Value>>) -> Result<CallToolResult, 
             )
         })?;
 
-    tracing::debug!("calculate: evaluating expression: {}", expression);
+    tracing::debug!("calculate: evaluating \"{}\"", expression);
 
-    // Evaluate — evalexpr works in a sandboxed context with no side effects.
-    let ctx = HashMapContext::new();
-    match eval_number_with_context(expression, &ctx) {
+    match eval_number(expression) {
         Ok(result) => {
             let payload = json!({
                 "expression": expression,
                 "result": result,
-                // Provide a friendly string for display in the chat UI
                 "formatted": format!("{} = {}", expression, result),
             });
 
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&payload)
-                    .unwrap_or_else(|_| payload.to_string()),
-            )]))
+            let text = serde_json::to_string_pretty(&payload)
+                .unwrap_or_else(|_| payload.to_string());
+
+            Ok(CallToolResult {
+                content: vec![Annotated {
+                    raw: RawContent::Text { text },
+                    annotations: None,
+                }],
+                is_error: Some(false),
+            })
         }
         Err(e) => {
-            // The expression was malformed or contained an unsupported operation.
-            // We return an MCP "isError: true" result rather than a JSON-RPC error
-            // so the AI model can see the error message and potentially retry.
+            // Return an isError:true result so the AI model can see what went
+            // wrong and potentially suggest a corrected expression.
             let payload = json!({
                 "expression": expression,
                 "error": e.to_string(),
-                "hint": "Use standard arithmetic: +, -, *, /, ^, sqrt(), abs(), sin(), cos()"
+                "hint": "Supported: +, -, *, /, ^, sqrt(), abs(), sin(), cos(), ln(), log2()"
             });
 
+            let text = serde_json::to_string_pretty(&payload)
+                .unwrap_or_else(|_| payload.to_string());
+
             Ok(CallToolResult {
-                content: vec![Content::text(
-                    serde_json::to_string_pretty(&payload)
-                        .unwrap_or_else(|_| payload.to_string()),
-                )],
+                content: vec![Annotated {
+                    raw: RawContent::Text { text },
+                    annotations: None,
+                }],
                 is_error: Some(true),
             })
         }

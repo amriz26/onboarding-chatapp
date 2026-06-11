@@ -43,7 +43,6 @@ function toolCalculate(expression: string): { text: string; isError?: boolean } 
 
 async function toolWeather(city: string): Promise<{ text: string; isError?: boolean }> {
   try {
-    // Step 1: geocode the city name → lat/lon
     const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`
     const geoRes = await fetch(geoUrl, { signal: AbortSignal.timeout(8000) })
     if (!geoRes.ok) throw new Error(`Geocoding failed: HTTP ${geoRes.status}`)
@@ -55,38 +54,58 @@ async function toolWeather(city: string): Promise<{ text: string; isError?: bool
     }
     const { latitude, longitude, name, country } = geoData.results[0]
 
-    // Step 2: fetch current weather from Open-Meteo (free, no API key, cloud-friendly)
-    const weatherUrl =
-      `https://api.open-meteo.com/v1/forecast` +
-      `?latitude=${latitude}&longitude=${longitude}` +
-      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,` +
-      `weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover` +
-      `&wind_speed_unit=kmh&timezone=auto`
-    const weatherRes = await fetch(weatherUrl, { signal: AbortSignal.timeout(8000) })
-    if (!weatherRes.ok) throw new Error(`Weather API failed: HTTP ${weatherRes.status}`)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const wd = await weatherRes.json() as any
-    const c = wd.current
+    // api.open-meteo.com can occasionally reset TLS connections; retry up to 3x
+    let lastErr: unknown
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt))
+      try {
+        const weatherUrl =
+          `https://api.open-meteo.com/v1/forecast` +
+          `?latitude=${latitude}&longitude=${longitude}` +
+          `&current=temperature_2m,apparent_temperature,relative_humidity_2m,` +
+          `weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover` +
+          `&wind_speed_unit=kmh&timezone=auto`
+        const weatherRes = await fetch(weatherUrl, { signal: AbortSignal.timeout(8000) })
+        if (!weatherRes.ok) throw new Error(`Weather API failed: HTTP ${weatherRes.status}`)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const wd = await weatherRes.json() as any
+        const c = wd.current
+        return {
+          text: JSON.stringify({
+            city: name, country,
+            temperature_c: c.temperature_2m, feels_like_c: c.apparent_temperature,
+            humidity_percent: c.relative_humidity_2m, condition: wmoDescription(c.weather_code),
+            wind_speed_kph: c.wind_speed_10m, precipitation_mm: c.precipitation,
+            cloud_cover_percent: c.cloud_cover, source: "open-meteo.com",
+          }),
+        }
+      } catch (e) {
+        lastErr = e
+      }
+    }
 
+    // All Open-Meteo attempts failed — fall back to wttr.in
+    const wttrRes = await fetch(
+      `https://wttr.in/${encodeURIComponent(name)}?format=j1`,
+      { signal: AbortSignal.timeout(8000) },
+    )
+    if (!wttrRes.ok) throw new Error(`wttr.in HTTP ${wttrRes.status}: ${String(lastErr)}`)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = await wttrRes.json() as any
+    const c = w.current_condition[0]
+    console.error(`[weather] open-meteo failed for "${city}", using wttr.in fallback`)
     return {
       text: JSON.stringify({
-        city: name,
-        country,
-        temperature_c: c.temperature_2m,
-        feels_like_c: c.apparent_temperature,
-        humidity_percent: c.relative_humidity_2m,
-        condition: wmoDescription(c.weather_code),
-        wind_speed_kph: c.wind_speed_10m,
-        precipitation_mm: c.precipitation,
-        cloud_cover_percent: c.cloud_cover,
-        source: "open-meteo.com",
+        city: name, country,
+        temperature_c: parseFloat(c.temp_C), feels_like_c: parseFloat(c.FeelsLikeC),
+        humidity_percent: parseFloat(c.humidity), condition: c.weatherDesc[0].value.trim(),
+        wind_speed_kph: parseFloat(c.windspeedKmph), precipitation_mm: parseFloat(c.precipMM),
+        cloud_cover_percent: parseFloat(c.cloudcover), source: "wttr.in",
       }),
     }
   } catch (err) {
     console.error(`[weather] fetch failed for "${city}":`, String(err))
-    return {
-      text: `Weather fetch failed for "${city}": ${String(err)}`,
-    }
+    return { text: `Weather fetch failed for "${city}": ${String(err)}` }
   }
 }
 

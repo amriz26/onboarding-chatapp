@@ -218,7 +218,7 @@ export const MCPClientHttp: Layer.Layer<
   MCPService,
   McpConnectionError,
   ConfigService
-> = Layer.scoped(
+> = Layer.effect(
   MCPService,
   Effect.gen(function* () {
     const { mcpServerUrl } = yield* ConfigService
@@ -239,32 +239,27 @@ export const MCPClientHttp: Layer.Layer<
         }),
     })
 
-    const client = yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: async () => {
-          const transport = new StreamableHTTPClientTransport(url)
-          const mcpClient = new Client(
-            { name: "effect-mcp-web", version: "0.1.0" },
-            { capabilities: {} },
-          )
-          await mcpClient.connect(transport)
-          return mcpClient
-        },
-        catch: (cause) =>
-          new McpConnectionError({
-            message: `Failed to connect to MCP HTTP server at "${url}": ${String(cause)}`,
-            cause,
-          }),
-      }),
-      (mcpClient) =>
-        Effect.promise(async () => {
-          try {
-            await mcpClient.close()
-          } catch {
-            // Ignore close errors.
-          }
+    // Layer.effect (not Layer.scoped + acquireRelease) so the client stays
+    // alive past the Effect scope boundary. The route returns a StreamTextResult
+    // before the scope closes; AI tool execute() callbacks run during streaming
+    // — after scope close — and still need the client to make MCP calls.
+    // The Railway server's 10-minute idle timeout handles session cleanup.
+    const client = yield* Effect.tryPromise({
+      try: async () => {
+        const transport = new StreamableHTTPClientTransport(url)
+        const mcpClient = new Client(
+          { name: "effect-mcp-web", version: "0.1.0" },
+          { capabilities: {} },
+        )
+        await mcpClient.connect(transport)
+        return mcpClient
+      },
+      catch: (cause) =>
+        new McpConnectionError({
+          message: `Failed to connect to MCP HTTP server at "${url}": ${String(cause)}`,
+          cause,
         }),
-    )
+    })
 
     return {
       listTools: Effect.tryPromise({

@@ -231,7 +231,13 @@ export const MCPClientHttp: Layer.Layer<
       )
     }
 
-    const url = new URL("/mcp", mcpServerUrl.value)
+    const url = yield* Effect.try({
+      try: () => new URL("/mcp", mcpServerUrl.value),
+      catch: () =>
+        new McpConnectionError({
+          message: `MCP_SERVER_URL "${mcpServerUrl.value}" is not a valid URL. It must start with https://, e.g. https://your-service.up.railway.app`,
+        }),
+    })
 
     const client = yield* Effect.acquireRelease(
       Effect.tryPromise({

@@ -119,23 +119,26 @@ export async function POST(req: Request): Promise<Response> {
   // ---------------------------------------------------------------------------
   return exit.value.toDataStreamResponse({
     getErrorMessage: (error) => {
-      let detail: string
       try {
+        const info: Record<string, unknown> = {}
         if (error instanceof Error) {
-          detail = `${error.constructor.name}: ${error.message}`
-          if ((error as { cause?: unknown }).cause) {
-            detail += ` | cause: ${String((error as { cause?: unknown }).cause)}`
+          info.name = (error as { name?: string }).name ?? error.constructor.name
+          info.message = error.message
+          // Capture all own enumerable and non-enumerable properties
+          for (const key of Object.getOwnPropertyNames(error)) {
+            if (key !== "stack") {
+              try { info[key] = (error as unknown as Record<string, unknown>)[key] } catch {}
+            }
           }
-        } else if (typeof error === "string") {
-          detail = error
         } else {
-          detail = JSON.stringify(error) ?? String(error)
+          info.raw = JSON.stringify(error)
         }
+        const detail = JSON.stringify(info)
+        console.error("[/api/chat] streaming error:", detail)
+        return detail
       } catch {
-        detail = String(error)
+        return `stream-error: ${String(error)}`
       }
-      console.error("[/api/chat] streaming error:", detail, error)
-      return detail
     },
   })
 }

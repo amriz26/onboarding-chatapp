@@ -27,13 +27,7 @@ import { type CoreMessage } from "ai"
 import { ChatService } from "@/services/ChatService"
 import { AppLayer } from "@/layers/ChatLayer"
 import { ChatRequestSchema } from "@/lib/schemas"
-import {
-  McpConnectionError,
-  McpToolDiscoveryError,
-  ValidationError,
-  AiApiError,
-  ConfigError,
-} from "@/lib/effect/errors"
+import { ValidationError } from "@/lib/effect/errors"
 import { streamChatProgram } from "@/effects/chat"
 
 // Node.js runtime required — MCP SDK spawns child processes unavailable in Edge.
@@ -91,28 +85,28 @@ export async function POST(req: Request): Promise<Response> {
     const { cause } = exit
 
     if (cause._tag === "Fail") {
-      const error = cause.error
+      const error = cause.error as { _tag?: string; message?: string }
 
-      if (error instanceof McpConnectionError)
-        return jsonError(
-          `MCP server unavailable: ${error.message}. ` +
-            `Run \`pnpm build:mcp\` and set MCP_SERVER_PATH.`,
-          503,
-        )
-      if (error instanceof McpToolDiscoveryError)
+      // Use _tag for matching — Data.TaggedError subclasses are not always
+      // instanceof-compatible across module boundaries in Next.js bundles.
+      const tag = error?._tag
+
+      if (tag === "McpConnectionError")
+        return jsonError(`MCP server unavailable: ${error.message}`, 503)
+      if (tag === "McpToolDiscoveryError")
         return jsonError(`Failed to discover MCP tools: ${error.message}`, 502)
-      if (error instanceof AiApiError)
+      if (tag === "AiApiError")
         return jsonError(`AI API error: ${error.message}`, 502)
-      if (error instanceof ValidationError)
-        return jsonError(error.message, 400)
-      if (error instanceof ConfigError)
-        return jsonError(
-          `Server configuration error: ${error.message}`,
-          500,
-        )
+      if (tag === "ValidationError")
+        return jsonError(error.message ?? "Validation error", 400)
+      if (tag === "ConfigError")
+        return jsonError(`Server configuration error: ${error.message}`, 500)
+
+      console.error("[/api/chat] Unhandled typed failure:", JSON.stringify(error))
+    } else {
+      console.error("[/api/chat] Defect/interrupt:", JSON.stringify(cause))
     }
 
-    console.error("[/api/chat] Unexpected failure:", cause)
     return jsonError("Internal server error", 500)
   }
 

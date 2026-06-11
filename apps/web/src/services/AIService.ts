@@ -79,7 +79,7 @@ export const AIServiceLive: Layer.Layer<AIService, never, ConfigService> =
           Effect.try({
             try: () =>
               streamText({
-                model: anthropicProvider("claude-3-5-sonnet-20241022"),
+                model: anthropicProvider("claude-sonnet-4-5"),
                 system: SYSTEM_PROMPT,
                 messages,
                 tools,

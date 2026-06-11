@@ -22,9 +22,8 @@
  * failure.
  */
 
-import { Effect, Schema } from "effect"
+import { Cause, Effect, Option, Schema } from "effect"
 import { type CoreMessage } from "ai"
-import { ChatService } from "@/services/ChatService"
 import { AppLayer } from "@/layers/ChatLayer"
 import { ChatRequestSchema } from "@/lib/schemas"
 import { ValidationError } from "@/lib/effect/errors"
@@ -84,11 +83,13 @@ export async function POST(req: Request): Promise<Response> {
   if (exit._tag === "Failure") {
     const { cause } = exit
 
-    if (cause._tag === "Fail") {
-      const error = cause.error as { _tag?: string; message?: string }
+    // Cause.failureOption handles Fail, Sequential, and Parallel cause shapes —
+    // cause._tag may be "Sequential" or "Parallel" when layers fail together,
+    // so checking cause._tag === "Fail" directly misses those cases.
+    const failureOption = Cause.failureOption(cause)
 
-      // Use _tag for matching — Data.TaggedError subclasses are not always
-      // instanceof-compatible across module boundaries in Next.js bundles.
+    if (Option.isSome(failureOption)) {
+      const error = failureOption.value as { _tag?: string; message?: string }
       const tag = error?._tag
 
       if (tag === "McpConnectionError")
@@ -103,11 +104,13 @@ export async function POST(req: Request): Promise<Response> {
         return jsonError(`Server configuration error: ${error.message}`, 500)
 
       console.error("[/api/chat] Unhandled typed failure:", JSON.stringify(error))
+      return jsonError(`Error [${tag ?? "unknown"}]: ${error.message ?? "no message"}`, 500)
     } else {
-      console.error("[/api/chat] Defect/interrupt:", JSON.stringify(cause))
+      // Die or Interrupt — an unhandled throw or fiber interruption
+      const defect = Cause.isDie(cause) ? String(Cause.dieOption(cause).pipe(Option.getOrElse(() => "unknown"))) : "interrupt"
+      console.error("[/api/chat] Defect/interrupt:", defect, JSON.stringify(cause))
+      return jsonError(`Server defect: ${defect}`, 500)
     }
-
-    return jsonError("Internal server error", 500)
   }
 
   // ---------------------------------------------------------------------------

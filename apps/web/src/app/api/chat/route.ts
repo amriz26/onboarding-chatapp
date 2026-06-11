@@ -120,7 +120,12 @@ export async function POST(req: Request): Promise<Response> {
   // Stream: toDataStreamResponse() encodes the result as SSE in the format
   // that useChat (and AI SDK Elements) expects.
   // ---------------------------------------------------------------------------
-  return exit.value.toDataStreamResponse()
+  return exit.value.toDataStreamResponse({
+    getErrorMessage: (error) => {
+      console.error("[/api/chat] streaming error:", error)
+      return error instanceof Error ? error.message : String(error)
+    },
+  })
 }
 
 function jsonError(message: string, status: number): Response {

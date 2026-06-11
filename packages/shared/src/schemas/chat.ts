@@ -55,7 +55,7 @@ export type ToolInvocation = Schema.Schema.Type<typeof ToolInvocationSchema>
  * directly to `useChat` / `streamText` without conversion.
  */
 export const ChatMessageSchema = Schema.Struct({
-  id: Schema.String,
+  id: Schema.optional(Schema.String),
   role: RoleSchema,
   content: Schema.String,
   /** Tool invocations attached to an assistant message. */

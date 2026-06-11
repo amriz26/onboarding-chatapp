@@ -51,7 +51,7 @@ async function toolWeather(city: string): Promise<{ text: string; isError?: bool
       results?: Array<{ name: string; country: string; latitude: number; longitude: number }>
     }
     if (!geoData.results?.length) {
-      return { text: JSON.stringify({ error: `City "${city}" not found` }), isError: true }
+      return { text: `City "${city}" not found — please try a different city name.` }
     }
     const { latitude, longitude, name, country } = geoData.results[0]
 
@@ -83,9 +83,9 @@ async function toolWeather(city: string): Promise<{ text: string; isError?: bool
       }),
     }
   } catch (err) {
+    console.error(`[weather] fetch failed for "${city}":`, String(err))
     return {
-      text: JSON.stringify({ error: `Could not fetch weather for "${city}": ${String(err)}` }),
-      isError: true,
+      text: `Weather fetch failed for "${city}": ${String(err)}`,
     }
   }
 }

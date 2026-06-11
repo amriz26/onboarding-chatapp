@@ -119,8 +119,23 @@ export async function POST(req: Request): Promise<Response> {
   // ---------------------------------------------------------------------------
   return exit.value.toDataStreamResponse({
     getErrorMessage: (error) => {
-      console.error("[/api/chat] streaming error:", error)
-      return error instanceof Error ? error.message : String(error)
+      let detail: string
+      try {
+        if (error instanceof Error) {
+          detail = `${error.constructor.name}: ${error.message}`
+          if ((error as { cause?: unknown }).cause) {
+            detail += ` | cause: ${String((error as { cause?: unknown }).cause)}`
+          }
+        } else if (typeof error === "string") {
+          detail = error
+        } else {
+          detail = JSON.stringify(error) ?? String(error)
+        }
+      } catch {
+        detail = String(error)
+      }
+      console.error("[/api/chat] streaming error:", detail, error)
+      return detail
     },
   })
 }

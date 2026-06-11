@@ -8,6 +8,8 @@ import { ConfigError as DomainConfigError } from "@/lib/effect/errors"
 export interface ConfigServiceApi {
   /** Path to the compiled Rust MCP binary. None when not configured (uses mock). */
   readonly mcpServerPath: Option.Option<string>
+  /** URL of a remote HTTP MCP server. Takes priority over mcpServerPath when set. */
+  readonly mcpServerUrl: Option.Option<string>
   /** Anthropic API key used to authenticate with Claude. */
   readonly anthropicApiKey: string
 }
@@ -56,6 +58,12 @@ export const ConfigLive = Layer.effect(
       Effect.orElseSucceed(() => Option.none<string>()),
     )
 
+    // Optional — when set, the HTTP MCP client is used instead of stdio/mock.
+    const mcpServerUrl = yield* Config.string("MCP_SERVER_URL").pipe(
+      Effect.map(Option.some<string>),
+      Effect.orElseSucceed(() => Option.none<string>()),
+    )
+
     // Required — the application cannot function without an Anthropic key.
     const anthropicApiKey = yield* Config.string("ANTHROPIC_API_KEY").pipe(
       Effect.mapError(
@@ -68,6 +76,6 @@ export const ConfigLive = Layer.effect(
       ),
     )
 
-    return { mcpServerPath, anthropicApiKey } satisfies ConfigServiceApi
+    return { mcpServerPath, mcpServerUrl, anthropicApiKey } satisfies ConfigServiceApi
   }),
 )

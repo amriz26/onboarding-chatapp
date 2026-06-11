@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { Tool } from "@modelcontextprotocol/sdk/types.js"
 import { Context, Effect, Layer, Option } from "effect"
 import {
@@ -196,8 +197,95 @@ export const MCPClientMock: Layer.Layer<MCPService, never, never> =
             tool: name,
             args,
             result: "[MOCK RESPONSE]",
-            note: "Set MCP_SERVER_PATH to use the real Rust server.",
+            note: "Set MCP_SERVER_URL to use the real HTTP MCP server.",
           }),
         },
       ]),
   })
+
+// ---------------------------------------------------------------------------
+// HTTP layer — connects to the remote Node.js MCP HTTP server
+// ---------------------------------------------------------------------------
+
+/**
+ * MCPClientHttp connects to the Node.js MCP HTTP server via
+ * StreamableHTTPClientTransport. Used in production on Vercel when
+ * MCP_SERVER_URL is configured to point at the Railway-hosted server.
+ *
+ * The URL is injected via ConfigService — no direct process.env access here.
+ */
+export const MCPClientHttp: Layer.Layer<
+  MCPService,
+  McpConnectionError,
+  ConfigService
+> = Layer.scoped(
+  MCPService,
+  Effect.gen(function* () {
+    const { mcpServerUrl } = yield* ConfigService
+
+    if (Option.isNone(mcpServerUrl)) {
+      return yield* Effect.fail(
+        new McpConnectionError({
+          message: "MCP_SERVER_URL is not configured.",
+        }),
+      )
+    }
+
+    const url = new URL("/mcp", mcpServerUrl.value)
+
+    const client = yield* Effect.acquireRelease(
+      Effect.tryPromise({
+        try: async () => {
+          const transport = new StreamableHTTPClientTransport(url)
+          const mcpClient = new Client(
+            { name: "effect-mcp-web", version: "0.1.0" },
+            { capabilities: {} },
+          )
+          await mcpClient.connect(transport)
+          return mcpClient
+        },
+        catch: (cause) =>
+          new McpConnectionError({
+            message: `Failed to connect to MCP HTTP server at "${url}": ${String(cause)}`,
+            cause,
+          }),
+      }),
+      (mcpClient) =>
+        Effect.promise(async () => {
+          try {
+            await mcpClient.close()
+          } catch {
+            // Ignore close errors.
+          }
+        }),
+    )
+
+    return {
+      listTools: Effect.tryPromise({
+        try: async () => {
+          const result = await client.listTools()
+          return result.tools
+        },
+        catch: (cause) =>
+          new McpToolDiscoveryError({
+            message: `Failed to list tools from MCP HTTP server: ${String(cause)}`,
+            cause,
+          }),
+      }),
+
+      callTool: (name: string, args: Record<string, unknown>) =>
+        Effect.tryPromise({
+          try: async () => {
+            const result = await client.callTool({ name, arguments: args })
+            return result.content as Array<{ type: string; text?: string }>
+          },
+          catch: (cause) =>
+            new McpToolCallError({
+              toolName: name,
+              message: `Tool call "${name}" failed: ${String(cause)}`,
+              cause,
+            }),
+        }),
+    } satisfies MCPServiceApi
+  }),
+)

@@ -1,29 +1,25 @@
 import { Layer } from "effect"
-import { MCPClientLive, MCPClientMock } from "@/services/MCPService"
+import { MCPClientHttp, MCPClientLive, MCPClientMock } from "@/services/MCPService"
 import { ConfigLive } from "@/services/ConfigService"
 
-/**
- * MCPLive — real connection to the Rust binary, with ConfigService provided.
- *
- * MCPClientLive depends on ConfigService for the server path.
- * We bake ConfigLive in here so the composed layer satisfies all requirements
- * without callers having to provide ConfigService separately.
- */
+/** Remote HTTP MCP server (production — Railway). */
+export const MCPHttp = MCPClientHttp.pipe(Layer.provide(ConfigLive))
+
+/** Local Rust binary over stdio (local dev with compiled binary). */
 export const MCPLive = MCPClientLive.pipe(Layer.provide(ConfigLive))
 
-/**
- * MCPMock — in-memory mock, no Rust binary required.
- * Identical API to MCPLive; produced by Layer.succeed so it has no lifecycle.
- */
+/** In-memory mock (local dev without binary or URL). */
 export const MCPMock = MCPClientMock
 
 /**
- * MCPLayer — the active MCP layer for the current environment.
+ * MCPLayer — active MCP layer selected at module load time.
  *
- * Selection is made once at module load time:
- *   - MCP_SERVER_PATH set   → MCPLive (spawns the Rust binary)
- *   - MCP_SERVER_PATH unset → MCPMock (in-memory predictable responses)
- *
- * No caller code changes when switching between live and mock.
+ *   MCP_SERVER_URL set  → MCPHttp  (remote HTTP server on Railway)
+ *   MCP_SERVER_PATH set → MCPLive  (local Rust binary via stdio)
+ *   neither             → MCPMock  (in-memory mock)
  */
-export const MCPLayer = process.env.MCP_SERVER_PATH ? MCPLive : MCPMock
+export const MCPLayer = process.env.MCP_SERVER_URL
+  ? MCPHttp
+  : process.env.MCP_SERVER_PATH
+    ? MCPLive
+    : MCPMock
